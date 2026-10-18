@@ -77,3 +77,50 @@ jobs:
         run: >
           docker compose -f compose.ci.yaml
           down --volumes --remove-orphans
+          
+  publish:
+    name: Publish Docker images
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      packages: write
+
+    env:
+      APP_IMAGE: ghcr.io/nikbaben/test-ci-cd
+      MINIO_IMAGE: ghcr.io/nikbaben/test-ci-cd-minio
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GH_TOKEN" |
+            docker login ghcr.io \
+              --username "$GITHUB_ACTOR" \
+              --password-stdin
+
+      - name: Build application image
+        run: |
+          docker build --pull \
+            --tag "${APP_IMAGE}:${GITHUB_SHA}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            .
+
+      - name: Build MinIO image
+        run: |
+          docker build --pull \
+            --tag "${MINIO_IMAGE}:${GITHUB_SHA}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            ./dev/minio
+
+      - name: Push images
+        run: |
+          docker push "${APP_IMAGE}:${GITHUB_SHA}"
+          docker push "${MINIO_IMAGE}:${GITHUB_SHA}"
