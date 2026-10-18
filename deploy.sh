@@ -47,7 +47,8 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
-
+# Шаблон realm должен быть доступен пользователю внутри Keycloak.
+chmod 0644 "$RELEASE_DIR/docker/keycloak/product-service-realm.json"
 "${compose[@]}" config --quiet
 "${compose[@]}" pull
 
