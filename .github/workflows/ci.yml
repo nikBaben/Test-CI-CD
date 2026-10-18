@@ -127,15 +127,18 @@ jobs:
           docker push "${MINIO_IMAGE}:${GITHUB_SHA}"
 
   
-  verify-server:
-    name: Verify server access
+  deploy:
+    name: Deploy Account Service
     needs: publish
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 30
 
     environment: production
-    permissions: {}
+
+    permissions:
+      contents: read
+      packages: read
 
     env:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -144,6 +147,9 @@ jobs:
       DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
 
     steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
       - name: Prepare SSH credentials
         shell: bash
         run: |
@@ -158,21 +164,62 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/deploy_key"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/deploy_known_hosts"
 
-      - name: Check SSH and Docker access
+          cat > "$RUNNER_TEMP/ssh_config" <<EOF
+          Host deployment
+              HostName $DEPLOY_HOST
+              User $DEPLOY_USER
+              IdentityFile $RUNNER_TEMP/deploy_key
+              UserKnownHostsFile $RUNNER_TEMP/deploy_known_hosts
+              StrictHostKeyChecking yes
+              BatchMode yes
+              IdentitiesOnly yes
+              RequestTTY no
+              ConnectTimeout 15
+              ServerAliveInterval 30
+              ServerAliveCountMax 6
+          EOF
+
+      - name: Upload release files
         shell: bash
         run: |
-          ssh -T \
-            -i "$RUNNER_TEMP/deploy_key" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$RUNNER_TEMP/deploy_known_hosts" \
-            -o ConnectTimeout=15 \
-            "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            'whoami && docker ps'
+          set -euo pipefail
+          release_dir="/opt/account-service/releases/$GITHUB_SHA"
 
-      - name: Remove SSH credentials
+          tar -czf - \
+            compose.production.yaml \
+            docker/keycloak/product-service-realm.json \
+            deploy.sh |
+            ssh -F "$RUNNER_TEMP/ssh_config" deployment \
+              "umask 077; mkdir -p '$release_dir' && tar -xzf - -C '$release_dir'"
+
+      - name: Authorize server to download images
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          config_dir="/opt/account-service/releases/$GITHUB_SHA/.docker"
+
+          printf '%s' "$GHCR_TOKEN" |
+            ssh -F "$RUNNER_TEMP/ssh_config" deployment \
+              "umask 077; mkdir -p '$config_dir' && docker --config '$config_dir' login ghcr.io --username '$GITHUB_ACTOR' --password-stdin"
+
+      - name: Deploy release
+        shell: bash
+        run: |
+          ssh -F "$RUNNER_TEMP/ssh_config" deployment \
+            "bash '/opt/account-service/releases/$GITHUB_SHA/deploy.sh'"
+
+      - name: Remove deployment credentials
         if: always()
         shell: bash
         run: |
-          rm -f "$RUNNER_TEMP/deploy_key" "$RUNNER_TEMP/deploy_known_hosts"
+          if [[ -f "$RUNNER_TEMP/ssh_config" ]]; then
+            ssh -F "$RUNNER_TEMP/ssh_config" deployment \
+              "rm -f '/opt/account-service/releases/$GITHUB_SHA/.docker/config.json'" || true
+          fi
+
+          rm -f \
+            "$RUNNER_TEMP/deploy_key" \
+            "$RUNNER_TEMP/deploy_known_hosts" \
+            "$RUNNER_TEMP/ssh_config"
