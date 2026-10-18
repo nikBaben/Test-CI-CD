@@ -1,0 +1,25 @@
+.venv/
+.env
+.env.local
+.env.demo
+.env.docker
+.env.docker.local
+__pycache__/
+.pytest_cache/
+*.pyc
+backups/
+
+# Секреты и локальные настройки
+.env*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+
+# Локальные файлы
+.DS_Store
+.idea/
+.vscode/
+backups/
+test_documents/
+*.dump
