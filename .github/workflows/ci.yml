@@ -77,7 +77,8 @@ jobs:
         run: >
           docker compose -f compose.ci.yaml
           down --volumes --remove-orphans
-          
+
+
   publish:
     name: Publish Docker images
     needs: check
@@ -124,3 +125,54 @@ jobs:
         run: |
           docker push "${APP_IMAGE}:${GITHUB_SHA}"
           docker push "${MINIO_IMAGE}:${GITHUB_SHA}"
+
+  
+  verify-server:
+    name: Verify server access
+    needs: publish
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    environment: production
+    permissions: {}
+
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+
+    steps:
+      - name: Prepare SSH credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/deploy_known_hosts"
+
+      - name: Check SSH and Docker access
+        shell: bash
+        run: |
+          ssh -T \
+            -i "$RUNNER_TEMP/deploy_key" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/deploy_known_hosts" \
+            -o ConnectTimeout=15 \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            'whoami && docker ps'
+
+      - name: Remove SSH credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/deploy_key" "$RUNNER_TEMP/deploy_known_hosts"
