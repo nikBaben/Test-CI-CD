@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Tests and Docker build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    env:
+      POETRY_NO_INTERACTION: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install Poetry
+        run: python -m pip install poetry==2.4.1
+
+      - name: Check dependency lock file
+        run: poetry check --lock
+
+      - name: Install dependencies
+        run: poetry install --with test --no-root
+
+      - name: Run tests
+        run: poetry run pytest -q -m "not rabbitmq_integration"
+
+      - name: Build application image
+        run: docker build --pull --tag account-service:ci .
