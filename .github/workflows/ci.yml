@@ -18,7 +18,7 @@ jobs:
   check:
     name: Tests and Docker build
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     env:
       POETRY_NO_INTERACTION: "1"
@@ -42,8 +42,38 @@ jobs:
       - name: Install dependencies
         run: poetry install --with test --no-root
 
-      - name: Run tests
-        run: poetry run pytest -q -m "not rabbitmq_integration"
+      - name: Start test infrastructure
+        run: >
+          docker compose -f compose.ci.yaml
+          up -d --build --wait --wait-timeout 180
+
+      - name: Check database migrations
+        env:
+          DB_URL: postgresql+asyncpg://account_test:ci_db_password@127.0.0.1:5432/account_service_test
+        run: |
+          poetry run alembic upgrade head
+          poetry run alembic check
+
+      - name: Run all tests
+        env:
+          TEST_DATABASE_URL: postgresql+asyncpg://account_test:ci_db_password@127.0.0.1:5432/account_service_test
+          TEST_RABBITMQ_URL: amqp://account_test:ci_rabbit_password@127.0.0.1:5672/account_test
+          TEST_MINIO_ENDPOINT: 127.0.0.1:9000
+          TEST_MINIO_ACCESS_KEY: ci_minio
+          TEST_MINIO_SECRET_KEY: ci_minio_password
+        run: poetry run pytest -q
 
       - name: Build application image
         run: docker build --pull --tag account-service:ci .
+
+      - name: Show infrastructure logs on failure
+        if: failure()
+        run: >
+          docker compose -f compose.ci.yaml
+          logs --no-color --tail 100
+
+      - name: Remove test infrastructure
+        if: always()
+        run: >
+          docker compose -f compose.ci.yaml
+          down --volumes --remove-orphans
